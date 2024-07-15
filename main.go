@@ -24,11 +24,24 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/jschwinger233/elibpcap"
 	flag "github.com/spf13/pflag"
+	"golang.org/x/exp/maps"
+)
+
+const (
+	skbDistLatency = iota
+	skbDistSkbLen
+	skbDistCpu
+	skbDistQueue
 )
 
 var (
 	runWithNonCore = false
 	ifname         string
+
+	distSkbLatency = false
+	distSkbLen     = false
+	distCpu        = false
+	distQueue      = false
 )
 
 func init() {
@@ -41,7 +54,22 @@ func init() {
 
 	flag.BoolVarP(&runWithNonCore, "non-core", "n", false, "Run with non-core bpf [TODO]")
 	flag.StringVarP(&ifname, "interface", "i", "", "Interface to filter packets, all interfaces if not specified")
+	flag.BoolVar(&distSkbLatency, "dist-latency", false, "Measure distribution of skb latency")
+	flag.BoolVar(&distSkbLen, "dist-skblen", false, "Measure distribution of skb length")
+	flag.BoolVar(&distCpu, "dist-cpu", false, "Measure distribution of CPU")
+	flag.BoolVar(&distQueue, "dist-queue", false, "Measure distribution of queue")
 	flag.Parse()
+}
+
+type skbDistConfig struct {
+	Ifindex uint32
+	Flags   uint32
+}
+
+func (c *skbDistConfig) setFlags(set bool, idx int) {
+	if set {
+		c.Flags |= 1 << uint(idx)
+	}
 }
 
 func loadSpec() (*ebpf.CollectionSpec, error) {
@@ -76,8 +104,19 @@ func main() {
 		log.Fatalf("Failed to load BPF collection spec: %v", err)
 	}
 
+	var cfg skbDistConfig
+	cfg.Ifindex = ifindex
+	cfg.setFlags(distSkbLatency, skbDistLatency)
+	cfg.setFlags(distSkbLen, skbDistSkbLen)
+	cfg.setFlags(distCpu, skbDistCpu)
+	cfg.setFlags(distQueue, skbDistQueue)
+	if cfg.Flags == 0 {
+		cfg.setFlags(true, skbDistLatency)
+		cfg.setFlags(true, skbDistSkbLen)
+	}
+
 	if err := spec.RewriteConstants(map[string]interface{}{
-		"FILTER_IFINDEX": ifindex,
+		"CONFIG": cfg,
 	}); err != nil {
 		log.Fatalf("Failed to rewrite constants: %v", err)
 	}
@@ -108,14 +147,30 @@ func main() {
 	defer coll.Close()
 
 	defer func() {
-		fmt.Println()
+		if distSkbLen {
+			fmt.Println()
+			showSkbLens(coll.Maps["skb_lens"])
+			fmt.Println()
+		}
 
-		showSkbLens(coll.Maps["skb_lens"])
+		if distCpu {
+			fmt.Println()
+			showSkbCpus(coll.Maps["skb_recv_cpus"], "Recv")
+			fmt.Println()
+			showSkbCpus(coll.Maps["skb_xmit_cpus"], "Xmit")
+			fmt.Println()
+		}
 
-		fmt.Println()
-		fmt.Println()
+		if distQueue {
+			fmt.Println()
+			showSkbQueues(coll.Maps["skb_queues"])
+			fmt.Println()
+		}
 
-		showSkbLatencies(coll.Maps["skb_latencies"])
+		if distSkbLatency {
+			fmt.Println()
+			showSkbLatencies(coll.Maps["skb_latencies"])
+		}
 	}()
 
 	if tp, err := link.Tracepoint("net", "netif_receive_skb",
@@ -304,5 +359,63 @@ func showSkbLens(m *ebpf.Map) {
 	if sum := merged.sum(); sum > 0 {
 		fmt.Printf("Receive SKB lengths (total %d pkts) :\n", sum)
 		PrintLog2Hist(merged.Slots[:], "byte")
+	}
+}
+
+func showSkbCpus(m *ebpf.Map, msg string) {
+	cpus := make(map[uint32]uint64, 64)
+
+	var key uint32
+	var val uint64
+
+	iter := m.Iterate()
+	for iter.Next(&key, &val) {
+		cpus[key] += val
+	}
+
+	if err := iter.Err(); err != nil {
+		log.Fatalf("Failed to iterate over skb_cpus map: %v", err)
+	}
+
+	keys := maps.Keys(cpus)
+	slices.Sort(keys)
+
+	sum := 0
+	for _, key := range keys {
+		sum += int(cpus[key])
+	}
+
+	fmt.Printf("%s CPU's distribution (total %d pkts) :\n", msg, sum)
+	for _, key := range keys {
+		fmt.Printf("CPU %3d: %d\n", key, cpus[key])
+	}
+}
+
+func showSkbQueues(m *ebpf.Map) {
+	queues := make(map[uint16]uint64, 64)
+
+	var key uint16
+	var val uint64
+
+	iter := m.Iterate()
+	for iter.Next(&key, &val) {
+		queues[key] += val
+	}
+
+	if err := iter.Err(); err != nil {
+		log.Fatalf("Failed to iterate over skb_queues map: %v", err)
+	}
+
+	keys := maps.Keys(queues)
+	slices.Sort(keys)
+
+	sum := 0
+	for _, key := range keys {
+		sum += int(queues[key])
+	}
+
+	fmt.Printf("Recv queue distribution (total %d pkts) :\n", sum)
+	for _, key := range keys {
+		fmt.Printf("Queue %3d: %d\n", key, queues[key])
 	}
 }

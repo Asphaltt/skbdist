@@ -24,7 +24,16 @@
 #define ctx_ptr(ctx, mem) ((void *)(unsigned long) ctx->mem)
 char _license[] SEC("license") = "GPL";
 
-static volatile const __u32 FILTER_IFINDEX = 0;
+struct config {
+    __u32 ifindex;
+    __u32 dist_latency:1;
+    __u32 dist_skblen:1;
+    __u32 dist_cpu:1;
+    __u32 dist_queue:1;
+};
+
+static volatile const struct config CONFIG = {};
+#define cfg (&CONFIG)
 
 struct net_tuple {
     __be32 saddr;
@@ -72,6 +81,9 @@ struct {
 static __always_inline void
 handle_skb_len(__u32 len, __u32 idx)
 {
+    if (!cfg->dist_skblen)
+        return;
+
     struct hist *hist = (typeof(hist)) bpf_map_lookup_elem(&skb_lens, &idx);
     if (!hist)
         return;
@@ -81,6 +93,53 @@ handle_skb_len(__u32 len, __u32 idx)
         slot = MAX_SLOTS - 1;
 
     hist->slots[slot]++; // no need for atomic operation as PERCPU_ARRAY
+}
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, __u32);
+    __type(value, __u64);
+    __uint(max_entries, 1024);
+} skb_recv_cpus SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, __u32);
+    __type(value, __u64);
+    __uint(max_entries, 1024);
+} skb_xmit_cpus SEC(".maps");
+
+static __always_inline void
+handle_skb_cpu(bool is_rcv)
+{
+    if (!cfg->dist_cpu)
+        return;
+
+    __u64 init = 0;
+    __u32 cpu = bpf_get_smp_processor_id();
+    void *map = is_rcv ? (void *) &skb_recv_cpus : (void *) &skb_xmit_cpus;
+    __u64 *count = (typeof(count)) bpf_map_lookup_or_try_init(map, &cpu, &init);
+    if (count)
+        __sync_fetch_and_add(count, 1);
+}
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, __u16);
+    __type(value, __u64);
+    __uint(max_entries, 1024);
+} skb_queues SEC(".maps");
+
+static __always_inline void
+handle_skb_queue(__u16 queue)
+{
+    if (!cfg->dist_queue)
+        return;
+
+    __u64 init = 0;
+    __u64 *count = (typeof(count)) bpf_map_lookup_or_try_init(&skb_queues, &queue, &init);
+    if (count)
+        __sync_fetch_and_add(count, 1);
 }
 
 struct {
@@ -109,8 +168,11 @@ __inc_hist(struct net_tuple *tuple, __u64 prev)
 }
 
 static __always_inline void
-handle_tuple(struct net_tuple *tuple)
+handle_skb_latency(struct net_tuple *tuple)
 {
+    if (!cfg->dist_latency)
+        return;
+
     __u64 prev = __get_or_set_ts(tuple);
     if (prev)
         __inc_hist(tuple, prev);

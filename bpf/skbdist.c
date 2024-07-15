@@ -15,7 +15,7 @@ static __always_inline bool
 filter(struct sk_buff *skb)
 {
     int ifindex = skb->dev->ifindex;
-    if (FILTER_IFINDEX && ifindex != FILTER_IFINDEX)
+    if (cfg->ifindex && ifindex != cfg->ifindex)
         return false;
 
     void *skb_head = skb->head;
@@ -73,7 +73,7 @@ extract_tuple(struct sk_buff *skb, struct net_tuple *tuple)
 }
 
 static __always_inline int
-handle_skb(struct sk_buff *skb)
+handle_skb(struct sk_buff *skb, const bool is_rcv)
 {
     if (!filter(skb))
         return BPF_OK;
@@ -82,7 +82,26 @@ handle_skb(struct sk_buff *skb)
     if (!extract_tuple(skb, &tuple))
         return BPF_OK;
 
-    handle_tuple(&tuple);
+    if (is_rcv) {
+        __be32 addr = tuple.saddr;
+        tuple.saddr = tuple.daddr;
+        tuple.daddr = addr;
+
+        __u16 port = tuple.sport;
+        tuple.sport = tuple.dport;
+        tuple.dport = port;
+    }
+
+    handle_skb_latency(&tuple);
+
+    handle_skb_len(skb->len, is_rcv);
+
+    if (is_rcv) {
+        __u16 queue = skb->queue_mapping;
+        handle_skb_queue(queue);
+    }
+
+    handle_skb_cpu(is_rcv);
 
     return BPF_OK;
 }
@@ -97,7 +116,7 @@ struct tp_netif_receive_skb_args {
 SEC("tracepoint/net/netif_receive_skb")
 int tracepoint__netif_receive_skb(struct tp_netif_receive_skb_args *args)
 {
-    return handle_skb((struct sk_buff *) args->skbaddr);
+    return handle_skb((struct sk_buff *) args->skbaddr, true);
 }
 
 struct tp_net_dev_xmit_args {
@@ -111,5 +130,5 @@ struct tp_net_dev_xmit_args {
 SEC("tracepoint/net/net_dev_xmit")
 int tracepoint__net_dev_xmit(struct tp_net_dev_xmit_args *args)
 {
-    return handle_skb((struct sk_buff *) args->skbaddr);
+    return handle_skb((struct sk_buff *) args->skbaddr, false);
 }

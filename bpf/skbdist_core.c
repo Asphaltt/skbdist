@@ -15,7 +15,7 @@ static __always_inline bool
 filter(struct sk_buff *skb)
 {
     int ifindex = BPF_CORE_READ(skb, dev, ifindex);
-    if (FILTER_IFINDEX && ifindex != FILTER_IFINDEX)
+    if (cfg->ifindex && ifindex != cfg->ifindex)
         return false;
 
     void *skb_head = BPF_CORE_READ(skb, head);
@@ -97,10 +97,17 @@ handle_skb(struct sk_buff *skb, const bool is_rcv)
         tuple.dport = port;
     }
 
-    handle_tuple(&tuple);
+    handle_skb_latency(&tuple);
 
     int len = BPF_CORE_READ(skb, len);
     handle_skb_len(len, is_rcv);
+
+    if (is_rcv) {
+        __u16 queue = BPF_CORE_READ(skb, queue_mapping);
+        handle_skb_queue(queue);
+    }
+
+    handle_skb_cpu(is_rcv);
 
     return BPF_OK;
 }

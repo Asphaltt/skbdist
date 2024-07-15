@@ -17,6 +17,10 @@ $ ./skbdist -h
 Usage: ./skbdist [options] [pcap-filter]
     Available pcap-filter: see "man 7 pcap-filter"
     Available options:
+      --dist-cpu           Measure distribution of CPU
+      --dist-latency       Measure distribution of skb latency
+      --dist-queue         Measure distribution of queue
+      --dist-skblen        Measure distribution of skb length
   -i, --interface string   Interface to filter packets, all interfaces if not specified
   -n, --non-core           Run with non-core bpf [TODO]
 ```
@@ -28,9 +32,9 @@ NOTE: If to use [pcap-filter](https://www.tcpdump.org/manpages/pcap-filter.7.htm
 To measure the response latency of a TCP port, you can use the following command:
 
 ```bash
-$ sudo ./skbdist -i ens33 tcp port 8080
-2024/07/14 13:06:06 Attached tracepoint/net/netif_receive_skb
-2024/07/14 13:06:06 Attached tracepoint/net/net_dev_xmit
+$ sudo ./skbdist --dist-cpu --dist-queue --dist-skblen --dist-latency tcp port 8080
+2024/07/15 13:41:27 Attached tracepoint/net/netif_receive_skb
+2024/07/15 13:41:27 Attached tracepoint/net/net_dev_xmit
 Ctrl+C to show results..
 ^C
 Send SKB lengths (total 5 pkts) :
@@ -58,22 +62,34 @@ Receive SKB lengths (total 6 pkts) :
        128 -> 255        : 1             |**********                              |
 
 
-192.168.241.133:8080 -> 192.168.241.1:53402 (TCP) (total 5 records) :
+Recv CPU's distribution (total 6 pkts) :
+CPU   6: 6
+
+Xmit CPU's distribution (total 5 pkts) :
+CPU   3: 2
+CPU   6: 3
+
+
+Recv queue distribution (total 6 pkts) :
+Queue   0: 6
+
+
+192.168.241.133:8080 -> 192.168.241.1:61645 (TCP) (total 5 records) :
         µs               : count         distribution
-         0 -> 1          : 1             |********************                    |
-         2 -> 3          : 0             |                                        |
+         0 -> 1          : 0             |                                        |
+         2 -> 3          : 1             |****************************************|
          4 -> 7          : 0             |                                        |
-         8 -> 15         : 0             |                                        |
+         8 -> 15         : 1             |****************************************|
         16 -> 31         : 0             |                                        |
-        32 -> 63         : 1             |********************                    |
-        64 -> 127        : 2             |****************************************|
-       128 -> 255        : 0             |                                        |
+        32 -> 63         : 0             |                                        |
+        64 -> 127        : 1             |****************************************|
+       128 -> 255        : 1             |****************************************|
        256 -> 511        : 0             |                                        |
        512 -> 1023       : 0             |                                        |
       1024 -> 2047       : 0             |                                        |
       2048 -> 4095       : 0             |                                        |
       4096 -> 8191       : 0             |                                        |
-      8192 -> 16383      : 1             |********************                    |
+      8192 -> 16383      : 1             |****************************************|
 ```
 
 ## Development
